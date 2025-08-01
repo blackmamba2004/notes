@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS notes(
+    id INTEGER PRIMARY KEY,
+    title VARCHAR NOT NULL UNIQUE,
+    description TEXT
+);
