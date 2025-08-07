@@ -19,6 +19,10 @@ func (s *Storage) Close() error {
 	return s.db.Close()
 }
 
+func (s *Storage) BeginTransaction() (*sql.Tx, error) {
+	return s.db.Begin()
+}
+
 func New(storagePath string) (*Storage, error) {
 	const op = "storage.postgresql.New"
 
