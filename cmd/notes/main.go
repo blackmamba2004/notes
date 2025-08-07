@@ -2,19 +2,14 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"notes/internal/config"
 	"notes/internal/lib/logger/sl"
-	"notes/internal/notes/dto"
 
-	// "notes/internal/notes/handlers"
-	"notes/internal/notes/repository"
+	"notes/internal/notes/handlers"
 	"notes/internal/storage/postgresql"
-	"notes/internal/utils"
 	"os"
 	"time"
 )
@@ -22,21 +17,31 @@ import (
 func loggingMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			start := time.Now()
-
-			rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-			next.ServeHTTP(rw, r)
-
-			logger.Info(
-				"request",
+			entry := logger.With(
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
-				slog.Int("status", rw.statusCode),
-				slog.Duration("time", time.Since(start)),
+				slog.String("remote_addr", r.RemoteAddr),
+				slog.String("user_agent", r.UserAgent()),
 			)
+
+			rw := &customeResponseWriter{
+				ResponseWriter: w,
+			}
+
+			start := time.Now()
+			defer func() {
+				duration := time.Since(start)
+				entry.Info("request completed",
+					slog.Int("status", rw.statusCode),
+					slog.String("duration", duration.String()),
+				)
+			}()
+
+			next.ServeHTTP(rw, r)
 		})
 	}
 }
+
 
 const (
 	envLocal = "local"
@@ -60,43 +65,49 @@ func main() {
 
 	defer storage.Close()
 
-	noteRepo := repository.NewNoteRepo(storage)
-	ntd := &dto.NoteDTO{
-		Title: utils.ToPtr("New note"),
-	}
-	_, err = noteRepo.Create(ntd)
-	if err != nil {
-		unw := errors.Unwrap(err)
-		fmt.Println(unw)
-		log.Printf("error: %v", err)
+	mux := http.NewServeMux()
+
+	middlewareHandler := loggingMiddleware(logger)(mux)
+
+	server := http.Server{
+		Handler: middlewareHandler,
+		Addr:    "localhost:8083",
 	}
 
+	fmt.Printf("Server started on http://%s\n", server.Addr)
 
-	// mux := http.NewServeMux()
+	mux.HandleFunc("/", Hello)
+	mux.HandleFunc("/notes", handlers.CreateNote)
 
-	// middlewareHandler := AuthorizationMiddleware("123")(mux)
-	// middlewareHandler = loggingMiddleware(logger)(middlewareHandler)
-
-	// server := http.Server{
-	// 	Handler: middlewareHandler,
-	// 	Addr:    "localhost:8083",
-	// }
-
-	// fmt.Printf("Server started on http://%s\n", server.Addr)
-
-	// mux.HandleFunc("/", Hello)
-	// mux.HandleFunc("/notes", handlers.CreateNote)
-
-	// server.ListenAndServe()
+	server.ListenAndServe()
 }
 
 func Hello(w http.ResponseWriter, r *http.Request) {
-	json.NewEncoder(w).Encode("Hello")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"error": "not found",
+	})
 }
 
-type responseWriter struct {
+type customeResponseWriter struct {
 	http.ResponseWriter
 	statusCode int
+	set    bool
+}
+
+func (rw *customeResponseWriter) WriteHeader(code int) {
+	if !rw.set {
+		rw.statusCode = code
+		rw.set = true
+		rw.ResponseWriter.WriteHeader(code)
+	}
+}
+
+func (rw *customeResponseWriter) Write(b []byte) (int, error) {
+	if !rw.set {
+		rw.WriteHeader(http.StatusOK)
+	}
+	return rw.ResponseWriter.Write(b)
 }
 
 func setupLogger(env string) *slog.Logger {
@@ -122,14 +133,4 @@ func setupLogger(env string) *slog.Logger {
 		)
 	}
 	return logger
-}
-
-func AuthorizationMiddleware(token string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			formatedToken := fmt.Sprintf("Bearer %s", token)
-			w.Header().Add("Authorization", formatedToken)
-			next.ServeHTTP(w, r)
-		})
-	}
 }
